@@ -161,9 +161,6 @@ def _resolve_raw_database_url() -> str:
     ]
 
     for candidate in candidates:
-        normalized_candidate = normalize_database_url(candidate)
-        if running_on_railway and normalized_candidate.startswith("sqlite"):
-            continue
         if _is_usable_env_value(candidate) and _is_parseable_database_url(candidate):
             return candidate
 
@@ -171,16 +168,26 @@ def _resolve_raw_database_url() -> str:
     if mysql_from_parts is not None:
         return mysql_from_parts
 
+    fallback_url = _clean_env_value(settings.database_url)
+    if _is_usable_env_value(fallback_url) and _is_parseable_database_url(fallback_url):
+        normalized_fallback = normalize_database_url(fallback_url)
+        if running_on_railway and normalized_fallback.startswith("sqlite"):
+            print(
+                "[database] Railway database variables were not found. "
+                "Falling back to SQLite from DATABASE_URL/settings. "
+                "This is suitable for demo use only because Railway storage is ephemeral."
+            )
+        return fallback_url
+
     if running_on_railway:
         present_keys = ", ".join(_present_mysql_env_keys()) or "none"
         raise RuntimeError(
-            "No valid MySQL connection settings found on Railway. "
-            "Set MYSQL_URL or DATABASE_URL (mysql:// or mysql+pymysql://), "
-            "or provide MYSQLHOST, MYSQLPORT, MYSQLUSER, MYSQLPASSWORD, MYSQLDATABASE. "
+            "No valid database connection settings found on Railway. "
+            "Set DATABASE_URL, MYSQL_URL, or provide MYSQLHOST, MYSQLPORT, MYSQLUSER, MYSQLPASSWORD, MYSQLDATABASE. "
             f"Detected env keys: {present_keys}."
         )
 
-    return _clean_env_value(settings.database_url)
+    return fallback_url
 
 
 def normalize_database_url(url: str) -> str:
@@ -201,9 +208,9 @@ def validate_database_url(url: str) -> str:
         make_url(url)
     except ArgumentError as exc:
         raise RuntimeError(
-            "Invalid database URL. Configure Railway with MYSQL_URL, or set "
-            "DATABASE_URL to a valid SQLAlchemy URL (for MySQL use mysql:// or mysql+pymysql://). "
-            "Alternatively set MYSQLHOST, MYSQLPORT, MYSQLUSER, MYSQLPASSWORD, MYSQLDATABASE."
+            "Invalid database URL. Set DATABASE_URL to a valid SQLAlchemy URL "
+            "(examples: sqlite:///./hostel_erp.db, postgresql+psycopg2://..., mysql:// or mysql+pymysql://...). "
+            "Alternatively set MYSQL_URL or MYSQLHOST, MYSQLPORT, MYSQLUSER, MYSQLPASSWORD, MYSQLDATABASE."
         ) from exc
 
     return url

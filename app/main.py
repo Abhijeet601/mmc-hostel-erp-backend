@@ -6,19 +6,28 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import erp_models  # noqa: F401
+import app.erp_models  # Ensure all models loaded for create_all
 from .auth import ensure_default_admin
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .migrations import (
     migrate_admin_users_username,
+    migrate_hostel_application_allocation_fields,
+    migrate_hostel_application_cycle_fields,
+    migrate_hostel_application_allotted_category,
+    migrate_hostel_complaints_table,
+    migrate_hostel_room_fields,
+    migrate_hostel_students_old_fields,
     migrate_notices_is_active,
     migrate_notices_publish_date,
     migrate_plaintext_passwords,
+    seed_default_hostel_rooms,
 )
 from .routers.auth import router as auth_router
 from .routers.erp_admin import router as erp_admin_router
 from .routers.erp_student import router as erp_student_router
 from .routers.notices import router as notices_router
+from .routers.old_students import router as old_students_router
 from .seed_notices import sync_notice_folder_to_db
 
 logger = logging.getLogger(__name__)
@@ -46,6 +55,12 @@ def create_app() -> FastAPI:
         migrate_admin_users_username(engine)
         migrate_notices_publish_date(engine)
         migrate_notices_is_active(engine)
+        migrate_hostel_application_allocation_fields(engine)
+        migrate_hostel_application_cycle_fields(engine)
+        migrate_hostel_application_allotted_category(engine)
+        migrate_hostel_complaints_table(engine)
+        migrate_hostel_room_fields(engine)
+        migrate_hostel_students_old_fields(engine)
         
         # Check for plain text passwords on startup
         logger.info("Running password migration check on startup...")
@@ -67,6 +82,7 @@ def create_app() -> FastAPI:
         
         with SessionLocal() as db:
             ensure_default_admin(db)
+            seed_default_hostel_rooms(db)
             sync_notice_folder_to_db(
                 db,
                 source_dir=Path(settings.notice_source_dir),
@@ -80,7 +96,11 @@ def create_app() -> FastAPI:
     app.include_router(erp_student_router, prefix=settings.api_prefix)
     app.include_router(auth_router, prefix=settings.api_prefix)
     app.include_router(erp_admin_router, prefix=settings.api_prefix)
+    app.include_router(old_students_router, prefix=settings.api_prefix)
     app.include_router(notices_router, prefix=settings.api_prefix)
+    from .routers import activity_logs
+    app.include_router(activity_logs.router, prefix=settings.api_prefix)
+
 
     return app
 

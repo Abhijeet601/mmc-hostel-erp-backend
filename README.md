@@ -18,6 +18,9 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - `postgresql+psycopg2://...` for PostgreSQL
 - `mysql+pymysql://...` for MySQL
 
+On Railway, if no database environment variables are present, the app now falls back to the configured `DATABASE_URL`.
+If that fallback is SQLite, the service will start, but this should be treated as demo-only because Railway storage is ephemeral and data can be lost on redeploy/restart.
+
 See `.env.example` for SMTP, upload, and admin settings.
 
 ## Default admin
@@ -41,6 +44,7 @@ Change these with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
 - `POST /api/admin/login`
 - `GET /api/admin/dashboard`
 - `GET /api/admin/students`
+- `DELETE /api/admin/students/{id}`
 - `PATCH /api/admin/students/{id}/verify`
 - `PATCH /api/admin/students/{id}/shortlist`
 - `PATCH /api/admin/students/{id}/allocate-hostel`

@@ -13,6 +13,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 def ensure_upload_directories() -> None:
     (BASE_DIR / settings.PHOTO_DIR).mkdir(parents=True, exist_ok=True)
     (BASE_DIR / settings.RECEIPT_DIR).mkdir(parents=True, exist_ok=True)
+    (BASE_DIR / "uploads/error_reports").mkdir(parents=True, exist_ok=True)
 
 
 def save_upload_file(upload_file: UploadFile, destination_dir: str, prefix: str) -> str:
@@ -27,3 +28,13 @@ def save_upload_file(upload_file: UploadFile, destination_dir: str, prefix: str)
         shutil.copyfileobj(upload_file.file, buffer)
 
     return str(file_path.relative_to(BASE_DIR)).replace("\\", "/")
+
+
+def save_upload_file_bytes(file_buffer, destination_dir: str, filename: str) -> str:
+    destination = BASE_DIR / destination_dir
+    destination.mkdir(parents=True, exist_ok=True)
+    file_path = destination / filename
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file_buffer, buffer)
+    return str(file_path.relative_to(BASE_DIR)).replace("\\", "/")
+

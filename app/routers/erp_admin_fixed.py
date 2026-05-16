@@ -11,50 +11,37 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
 from ..dependencies import get_current_admin
-from ..erp_models import ActivityLog, ERPApplication, ERPApplicationPayment, ERPComplaint, ERPHostelPayment, ERPHostelRoom, ERPStudent
+from ..erp_models import ERPApplication, ERPApplicationPayment, ERPHostelPayment, ERPHostelRoom, ERPStudent
 from ..erp_schemas import (
     AdminAllocationRequest,
     AdminDashboardResponse,
     AdminHostelRoomPayload,
-    AdminPaymentListResponse,
     AdminStudentDetailResponse,
     AdminShortlistRequest,
     AdminStudentListResponse,
-    AdminPaymentSummary,
     AdminVerifyRequest,
     BulkCombinedUploadResponse,
     ChartDatum,
-    ComplaintListResponse,
-    ComplaintResponse,
-    ComplaintUpdateRequest,
     GenericMessageResponse,
     HostelRoomListResponse,
     HostelRoomSummary,
 )
 from ..services.erp_service import (
-    PAYMENT_STATUS_FAILED,
-    PAYMENT_STATUS_PENDING,
-    PAYMENT_STATUS_SUCCESS,
     application_payment_status,
     build_admin_recent_activities,
     build_admin_student_detail,
     build_admin_student_summary,
-    build_asset_url,
     build_room_summary,
     clean_text,
     current_application_status,
     ensure_valid_hostel_name,
     hostel_status,
     normalize_bed_number,
-    refresh_room_occupancy,
-    room_total_occupied_beds,
-    payment_reference,
-    update_room_occupancy,
+    room_occupied_beds,
     shortlist_status,
     utc_now,
     verification_status,
 )
-from ..services.payment_service import approve_application_payment, approve_hostel_payment, reject_payment
 
 router = APIRouter(prefix="/admin", tags=["erp-admin"])
 
@@ -74,59 +61,6 @@ def _get_student_with_application(student_id: int, db: Session) -> ERPStudent:
     return student
 
 
-def _payments_base_query():
-    return {
-        "application": select(ERPApplicationPayment).options(
-            selectinload(ERPApplicationPayment.student),
-            selectinload(ERPApplicationPayment.application),
-        ),
-        "hostel": select(ERPHostelPayment).options(
-            selectinload(ERPHostelPayment.student),
-            selectinload(ERPHostelPayment.application),
-        ),
-    }
-
-
-def _build_payment_summary(payment_type: str, payment: ERPApplicationPayment | ERPHostelPayment) -> AdminPaymentSummary:
-    application = payment.application
-    student = payment.student
-    return AdminPaymentSummary(
-        id=payment_reference(payment_type, payment.id),
-        payment_id=payment.id,
-        payment_type=payment_type,
-        status=payment.status,
-        payment_mode=payment.payment_mode,
-        transaction_id=payment.transaction_id,
-        amount=float(payment.amount),
-        payment_date=payment.payment_date,
-        receipt_url=build_asset_url(payment.receipt_path),
-        application_number=student.application_number,
-        student_id=student.id,
-        student_name=application.name if application else None,
-        course_name=application.course_name if application else None,
-        hostel_name=payment.hostel_name if payment_type == "hostel" else application.allocated_hostel if application else None,
-    )
-
-
-def _get_payment_or_404(payment_id: str, db: Session) -> tuple[str, ERPApplicationPayment | ERPHostelPayment]:
-    try:
-        payment_type, raw_id = payment_id.rsplit("-", 1)
-        payment_pk = int(raw_id)
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment record not found.")
-
-    if payment_type == "application":
-        payment = db.scalar(_payments_base_query()["application"].where(ERPApplicationPayment.id == payment_pk))
-    elif payment_type == "hostel":
-        payment = db.scalar(_payments_base_query()["hostel"].where(ERPHostelPayment.id == payment_pk))
-    else:
-        payment = None
-
-    if not payment:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment record not found.")
-    return payment_type, payment
-
-
 def _chart_data(counter: Counter[str]) -> list[ChartDatum]:
     return [ChartDatum(label=label, value=value) for label, value in counter.items() if label]
 
@@ -142,27 +76,12 @@ def _get_room_or_404(room_id: int, db: Session) -> ERPHostelRoom:
     return room
 
 
-def _occupied_room_beds(db: Session, room: ERPHostelRoom, *, ignore_student_id: int | None = None) -> set[str]:
+def _next_available_bed(room: ERPHostelRoom, *, ignore_student_id: int | None = None) -> str | None:
     used_beds = {
-        normalize_bed_number(application.bed_number) or f"APP-{application.student_id}"
+        normalize_bed_number(application.bed_number)
         for application in room.applications
         if application.allocated_room_id == room.id and application.student_id != ignore_student_id
     }
-    old_students = db.execute(
-        select(ERPStudent).where(
-            ERPStudent.is_old_student == True,
-            ERPStudent.hostel_name == room.hostel_name,
-            ERPStudent.block_name == room.block_name,
-            ERPStudent.room_number == room.room_number,
-        )
-    ).scalars().all()
-    for student in old_students:
-        used_beds.add(normalize_bed_number(student.bed_number) or f"OLD-{student.id}")
-    return used_beds
-
-
-def _next_available_bed(db: Session, room: ERPHostelRoom, *, ignore_student_id: int | None = None) -> str | None:
-    used_beds = _occupied_room_beds(db, room, ignore_student_id=ignore_student_id)
     for index in range(1, room.bed_capacity + 1):
         candidate = f"B{index}"
         if candidate not in used_beds:
@@ -308,20 +227,19 @@ def get_admin_dashboard(
 ) -> AdminDashboardResponse:
     students = list(db.scalars(_students_base_query()))
     applications = [student.application for student in students if student.application]
-    application_payments = [payment for payment in db.scalars(select(ERPApplicationPayment)) if payment.status == PAYMENT_STATUS_SUCCESS]
-    hostel_payments = [payment for payment in db.scalars(select(ERPHostelPayment)) if payment.status == PAYMENT_STATUS_SUCCESS]
+    application_payments = list(db.scalars(select(ERPApplicationPayment)))
+    hostel_payments = list(db.scalars(select(ERPHostelPayment)))
     rooms = list(db.scalars(_rooms_base_query()))
-    for room in rooms:
-        refresh_room_occupancy(db, room)
+
+    from ..services.erp_service import old_students_count
 
     by_course = Counter(app.course_name or "Unassigned" for app in applications)
     by_category = Counter(app.category or "Unassigned" for app in applications)
     by_status = Counter(current_application_status(app) for app in applications)
     by_hostel = Counter(app.allocated_hostel or "Pending" for app in applications if app.is_shortlisted)
-    occupied_beds = sum((room.occupied_beds or 0) for room in rooms if room.is_active)
-    available_beds = sum(max(room.bed_capacity - (room.occupied_beds or 0), 0) for room in rooms if room.is_active)
+    occupied_beds = sum(room_occupied_beds(room) for room in rooms if room.is_active)
+    available_beds = sum(max(room.bed_capacity - room_occupied_beds(room), 0) for room in rooms if room.is_active)
 
-    old_students_count = db.execute(select(func.count(ERPStudent.id)).where(ERPStudent.is_old_student == True, ERPStudent.old_student_status == 'ACTIVE')).scalar() or 0
     return AdminDashboardResponse(
         total_applications=sum(1 for app in applications if app.form_status == "submitted"),
         total_paid=sum(1 for app in applications if application_payment_status(app) == "paid"),
@@ -330,7 +248,6 @@ def get_admin_dashboard(
         verified_students=sum(1 for app in applications if app.is_verified),
         hostel_allocated_students=sum(1 for app in applications if app.allocated_hostel),
         hostel_paid_students=len(hostel_payments),
-        old_students=old_students_count,
         total_rooms=sum(1 for room in rooms if room.is_active),
         occupied_beds=occupied_beds,
         available_beds=available_beds,
@@ -387,112 +304,6 @@ def get_student_detail(
     return AdminStudentDetailResponse(**build_admin_student_detail(student))
 
 
-@router.get("/payments", response_model=AdminPaymentListResponse)
-def list_payments(
-    db: Session = Depends(get_db),
-    _=Depends(get_current_admin),
-) -> AdminPaymentListResponse:
-    application_payments = list(db.scalars(_payments_base_query()["application"]))
-    hostel_payments = list(db.scalars(_payments_base_query()["hostel"]))
-    items = [
-        *(_build_payment_summary("application", payment) for payment in application_payments),
-        *(_build_payment_summary("hostel", payment) for payment in hostel_payments),
-    ]
-    items.sort(key=lambda item: item.payment_date, reverse=True)
-    return AdminPaymentListResponse(total=len(items), items=items)
-
-
-@router.get("/complaints", response_model=ComplaintListResponse)
-def list_complaints(
-    db: Session = Depends(get_db),
-    _=Depends(get_current_admin),
-) -> ComplaintListResponse:
-    items = list(db.scalars(select(ERPComplaint).order_by(ERPComplaint.created_at.desc())))
-    return ComplaintListResponse(total=len(items), items=[ComplaintResponse.model_validate(item) for item in items])
-
-
-@router.patch("/complaints/{complaint_id}", response_model=ComplaintResponse)
-def update_complaint(
-    complaint_id: int,
-    payload: ComplaintUpdateRequest,
-    db: Session = Depends(get_db),
-    _=Depends(get_current_admin),
-) -> ComplaintResponse:
-    complaint = db.get(ERPComplaint, complaint_id)
-    if not complaint:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Complaint not found.")
-    complaint.status = clean_text(payload.status) or complaint.status
-    complaint.resolution_note = clean_text(payload.resolution_note)
-    db.add(complaint)
-    db.commit()
-    db.refresh(complaint)
-    return ComplaintResponse.model_validate(complaint)
-
-
-@router.post("/approve-payment/{payment_id}", response_model=GenericMessageResponse)
-def approve_payment(
-    payment_id: str,
-    db: Session = Depends(get_db),
-    current_admin=Depends(get_current_admin),
-) -> GenericMessageResponse:
-    payment_type, payment = _get_payment_or_404(payment_id, db)
-    if payment.status == PAYMENT_STATUS_SUCCESS:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Payment is already approved.")
-    if payment.status == PAYMENT_STATUS_FAILED:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Rejected payments must be resubmitted by the student.")
-    if payment.status != PAYMENT_STATUS_PENDING:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only pending payments can be approved.")
-
-    if payment_type == "application":
-        email_status = approve_application_payment(student=payment.student, application=payment.application, payment=payment)
-        action = "approve_application_payment"
-    else:
-        email_status = approve_hostel_payment(student=payment.student, application=payment.application, payment=payment)
-        action = "approve_hostel_payment"
-
-    db.add(payment)
-    db.add(
-        ActivityLog(
-            entity_type="payment",
-            entity_id=payment_reference(payment_type, payment.id),
-            action=action,
-            new_values=f"{payment.transaction_id} / {payment.status} / email={email_status}",
-            admin_id=current_admin.id,
-        )
-    )
-    db.commit()
-    return GenericMessageResponse(message="Payment approved successfully.")
-
-
-@router.post("/reject-payment/{payment_id}", response_model=GenericMessageResponse)
-def reject_pending_payment(
-    payment_id: str,
-    db: Session = Depends(get_db),
-    current_admin=Depends(get_current_admin),
-) -> GenericMessageResponse:
-    payment_type, payment = _get_payment_or_404(payment_id, db)
-    if payment.status == PAYMENT_STATUS_SUCCESS:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approved payments cannot be rejected.")
-    if payment.status == PAYMENT_STATUS_FAILED:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Payment is already rejected.")
-    if payment.status != PAYMENT_STATUS_PENDING:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only pending payments can be rejected.")
-
-    reject_payment(payment)
-    db.add(payment)
-    db.add(
-        ActivityLog(
-            entity_type="payment",
-            entity_id=payment_reference(payment_type, payment.id),
-            action="reject_payment",
-            new_values=f"{payment.transaction_id} / {payment.status}",
-            admin_id=current_admin.id,
-        )
-    )
-    db.commit()
-    return GenericMessageResponse(message="Payment rejected successfully.")
-
-
 @router.patch("/students/{student_id}/verify", response_model=GenericMessageResponse)
 def verify_student_application(
     student_id: int,
@@ -535,20 +346,18 @@ def allocate_hostel(
     student_id: int,
     payload: AdminAllocationRequest,
     db: Session = Depends(get_db),
-    current_admin=Depends(get_current_admin),
+    _=Depends(get_current_admin),
 ) -> GenericMessageResponse:
     student = _get_student_with_application(student_id, db)
     if not student.application.is_shortlisted:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Student is not shortlisted yet.")
 
-    previous_room = student.application.allocated_room
     if payload.room_id is not None:
         room = _get_room_or_404(payload.room_id, db)
         if not room.is_active:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Selected room is inactive.")
 
-        refresh_room_occupancy(db, room)
-        occupied_beds = room_total_occupied_beds(db, room, exclude_student_id=student.id)
+        occupied_beds = room_occupied_beds(room)
         currently_assigned_here = student.application.allocated_room_id == room.id
         if occupied_beds >= room.bed_capacity and not currently_assigned_here:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Selected room is already full.")
@@ -556,13 +365,18 @@ def allocate_hostel(
         bed_number = (
             _validate_bed_number(room, payload.bed_number)
             if payload.bed_number
-            else _next_available_bed(db, room, ignore_student_id=student.id)
+            else _next_available_bed(room, ignore_student_id=student.id)
         )
         if not bed_number:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No bed is available in the selected room.")
 
-        if bed_number in _occupied_room_beds(db, room, ignore_student_id=student.id):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Selected bed is already occupied.")
+        for application in room.applications:
+            if (
+                application.student_id != student.id
+                and application.allocated_room_id == room.id
+                and normalize_bed_number(application.bed_number) == bed_number
+            ):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Selected bed is already occupied.")
 
         student.application.allocated_hostel = room.hostel_name
         student.application.allocated_room_id = room.id
@@ -580,37 +394,7 @@ def allocate_hostel(
     student.application.hostel_allocated_at = utc_now()
     db.add(student.application)
     db.commit()
-    if payload.room_id:
-        room = _get_room_or_404(payload.room_id, db)
-        update_room_occupancy(db, room)
-        if previous_room and previous_room.id != room.id:
-            update_room_occupancy(db, previous_room)
-        # Log activity
-        log = ActivityLog(
-            entity_type="student",
-            entity_id=str(student.id),
-            action="allocate_room",
-            new_values=f"Room {room.id}, Bed {bed_number or 'auto'}",
-            admin_id=current_admin.id
-        )
-        db.add(log)
-        db.commit()
     return GenericMessageResponse(message="Hostel allocated successfully.")
-
-
-@router.delete("/students/{student_id}", response_model=GenericMessageResponse)
-def delete_student_application(
-    student_id: int,
-    db: Session = Depends(get_db),
-    _=Depends(get_current_admin),
-) -> GenericMessageResponse:
-    student = db.get(ERPStudent, student_id)
-    if not student:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student record not found.")
-
-    db.delete(student)
-    db.commit()
-    return GenericMessageResponse(message="Student record deleted successfully.")
 
 
 @router.get("/hostel/rooms", response_model=HostelRoomListResponse)
@@ -619,8 +403,6 @@ def list_hostel_rooms(
     _=Depends(get_current_admin),
 ) -> HostelRoomListResponse:
     rooms = list(db.scalars(_rooms_base_query()))
-    for room in rooms:
-        refresh_room_occupancy(db, room)
     items = [
         HostelRoomSummary(**build_room_summary(room))
         for room in sorted(rooms, key=lambda item: (item.hostel_name, item.block_name, item.room_number))
@@ -661,7 +443,6 @@ def create_hostel_room(
     db.commit()
     db.refresh(room)
     room = _get_room_or_404(room.id, db)
-    refresh_room_occupancy(db, room)
     return HostelRoomSummary(**build_room_summary(room))
 
 
@@ -673,7 +454,6 @@ def update_hostel_room(
     _=Depends(get_current_admin),
 ) -> HostelRoomSummary:
     room = _get_room_or_404(room_id, db)
-    refresh_room_occupancy(db, room)
     hostel_name = ensure_valid_hostel_name(payload.hostel_name)
     block_name = clean_text(payload.block_name)
     room_number = clean_text(payload.room_number)
@@ -682,7 +462,7 @@ def update_hostel_room(
     if payload.bed_capacity < 1:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Bed capacity must be at least 1.")
 
-    occupied_beds = room.occupied_beds or 0
+    occupied_beds = room_occupied_beds(room)
     if payload.bed_capacity < occupied_beds:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -707,7 +487,6 @@ def update_hostel_room(
     db.commit()
     db.refresh(room)
     room = _get_room_or_404(room.id, db)
-    refresh_room_occupancy(db, room)
     return HostelRoomSummary(**build_room_summary(room))
 
 
@@ -1031,6 +810,230 @@ async def bulk_upload_allocation(
     return await _process_bulk_allocation_upload(file=file, hostel_name=hostel_name, db=db)
 
 
+@router.get("/old-students", response_model=OldStudentListResponse)
+def list_old_students(
+    search: str = Query(default=""),
+    hostel_name: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    _=Depends(get_current_admin),
+) -> OldStudentListResponse:
+    from sqlalchemy import or_, func
+    from ..erp_models import ERPStudent
+    
+    query = select(ERPStudent).where(ERPStudent.is_old_student == True)
+    
+    if search:
+        query = query.where(
+            or_(
+                ERPStudent.application_number.ilike(f"%{search}%"),
+                func.lower(getattr(ERPStudent.application, 'name', '')).ilike(f"%{search.lower()}%") if hasattr(ERPStudent, 'application') else False,
+            )
+        )
+    
+    if hostel_name:
+        query = query.where(ERPStudent.hostel_name == hostel_name)
+    
+    if status:
+        query = query.where(ERPStudent.old_student_status == status)
+    
+    query = query.order_by(ERPStudent.created_at.desc())
+    
+    total = db.scalar(select(func.count()).select_from(query.subquery()))
+    results = db.scalars(query.limit(limit).offset(offset)).all()
+    
+    items = [build_old_student_summary(student) for student in results]
+    
+    return OldStudentListResponse(total=total or 0, items=items)
+
+
+@router.post("/old-students", response_model=OldStudentResponse, status_code=status.HTTP_201_CREATED)
+def create_old_student(
+    payload: OldStudentCreate,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_admin),
+) -> OldStudentResponse:
+    # Check if hostel_id already exists
+    existing = db.scalar(select(ERPStudent).where(ERPStudent.application_number == payload.hostel_id))
+    if existing:
+        raise HTTPException(status_code=409, detail="Hostel ID already exists")
+    
+    # Validate allocation if provided
+    if payload.hostel_name and payload.block_name and payload.room_number:
+        validate_old_student_allocation(
+            db, payload.hostel_name, payload.block_name, payload.room_number, payload.bed_number
+        )
+    
+    password = generate_random_password()
+    student = ERPStudent(
+        application_number=payload.hostel_id,
+        email=payload.email or f"{payload.hostel_id}@old.student",
+        date_of_birth=date.today(),  # placeholder
+        mobile_number=payload.mobile_number,
+        password_hash=hash_password(password),
+        is_old_student=True,
+        old_student_status=payload.old_student_status,
+        hostel_name=payload.hostel_name,
+        block_name=payload.block_name,
+        room_number=payload.room_number,
+        bed_number=payload.bed_number,
+    )
+    
+    # Copy fields from payload
+    student.student_name = payload.student_name  # Wait, need to add this field or use application.name later
+    # Note: For now using application fields fallback in summary
+    
+    db.add(student)
+    db.commit()
+    db.refresh(student)
+    
+    return OldStudentResponse(
+        id=student.id,
+        hostel_id=student.application_number,
+        student_name=payload.student_name,
+        admission_id=payload.admission_id,
+        roll_number=payload.roll_number,
+        course_name=payload.course_name,
+        session=payload.session,
+        mobile_number=payload.mobile_number,
+        email=student.email,
+        category=payload.category,
+        hostel_name=payload.hostel_name,
+        block_name=payload.block_name,
+        room_number=payload.room_number,
+        bed_number=payload.bed_number,
+        old_student_status=payload.old_student_status,
+        created_at=student.created_at,
+        updated_at=student.updated_at,
+    )
+
+
+@router.put("/old-students/{student_id}", response_model=OldStudentResponse)
+def update_old_student(
+    student_id: int,
+    payload: OldStudentUpdate,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_admin),
+) -> OldStudentResponse:
+    student = db.get(ERPStudent, student_id)
+    if not student or not student.is_old_student:
+        raise HTTPException(status_code=404, detail="Old student not found")
+    
+    if payload.hostel_name and payload.block_name and payload.room_number:
+        validate_old_student_allocation(
+            db, payload.hostel_name, payload.block_name, payload.room_number, payload.bed_number, student.id
+        )
+    
+    for field in OldStudentBase.model_fields:
+        if hasattr(payload, field):
+            setattr(student, field, getattr(payload, field))
+    
+    student.updated_at = utc_now()
+    db.commit()
+    db.refresh(student)
+    
+    return OldStudentResponse.from_orm(student)  # Use ORM mode
+
+
+@router.delete("/old-students/{student_id}", response_model=GenericMessageResponse)
+def delete_old_student(
+    student_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_admin),
+) -> GenericMessageResponse:
+    student = db.get(ERPStudent, student_id)
+    if not student or not student.is_old_student:
+        raise HTTPException(status_code=404, detail="Old student not found")
+    
+    db.delete(student)
+    db.commit()
+    return GenericMessageResponse(message="Old student deleted successfully")
+
+
+@router.post("/old-students/bulk-upload", response_model=BulkCombinedUploadResponse)
+async def bulk_upload_old_students(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _=Depends(get_current_admin),
+) -> BulkCombinedUploadResponse:
+    dataframe = await _load_dataframe(file)
+    normalized_columns = {str(column).strip().lower(): column for column in dataframe.columns}
+    
+    required_columns = _pick_column(normalized_columns, ["hostel id", "hostel_id", "hostelid", "id"], required=True)
+    name_col = _pick_column(normalized_columns, ["student name", "student_name", "name"])
+    admission_col = _pick_column(normalized_columns, ["admission id", "admission_id"])
+    roll_col = _pick_column(normalized_columns, ["roll number", "roll_number", "roll"])
+    course_col = _pick_column(normalized_columns, ["course", "course_name"])
+    session_col = _pick_column(normalized_columns, ["session"])
+    category_col = _pick_column(normalized_columns, ["category"])
+    mobile_col = _pick_column(normalized_columns, ["mobile", "mobile_number", "phone"])
+    email_col = _pick_column(normalized_columns, ["email"])
+    hostel_col = _pick_column(normalized_columns, ["hostel name", "hostel", "hostel_name"])
+    block_col = _pick_column(normalized_columns, ["block", "block_name"])
+    room_col = _pick_column(normalized_columns, ["room", "room_number"])
+    bed_col = _pick_column(normalized_columns, ["bed", "bed_number"])
+    status_col = _pick_column(normalized_columns, ["status"])
+    
+    processed = 0
+    created = 0
+    errors = 0
+    room_errors = 0
+    
+    for _, row in dataframe.iterrows():
+        processed += 1
+        hostel_id = clean_text(row[required_columns])
+        if not hostel_id:
+            errors += 1
+            continue
+        
+        existing = db.scalar(select(ERPStudent).where(ERPStudent.application_number == hostel_id))
+        if existing:
+            errors += 1
+            continue
+        
+        try:
+            payload = OldStudentCreate(
+                hostel_id=hostel_id,
+                student_name=clean_text(row[name_col]) or hostel_id,
+                admission_id=clean_text(row[admission_col]),
+                roll_number=clean_text(row[roll_col]),
+                course_name=clean_text(row[course_col]) or "Unknown",
+                session=clean_text(row[session_col]) or "2026",
+                mobile_number=clean_text(row[mobile_col]) or "0000000000",
+                email=clean_text(row[email_col]),
+                category=clean_text(row[category_col]),
+                hostel_name=clean_text(row[hostel_col]),
+                block_name=clean_text(row[block_col]),
+                room_number=clean_text(row[room_col]),
+                bed_number=clean_text(row[bed_col]),
+                old_student_status=clean_text(row[status_col]) or "ACTIVE",
+            )
+            
+            create_old_student(payload.dict(), db, get_current_admin(db))  # Reuse create logic
+            created += 1
+            
+        except Exception as e:
+            errors += 1
+            if "room" in str(e).lower() or "bed" in str(e).lower():
+                room_errors += 1
+    
+    return BulkCombinedUploadResponse(
+        message=f"Bulk upload complete: {created} created, {errors} errors, {room_errors} room validation errors",
+        processed_rows=processed,
+        allocated=0,  # Not applicable
+        shortlisted_yes=0,
+        shortlisted_no=0,
+        updated_allotted_category=0,
+        auto_assigned_beds=0,
+        invalid_registrations=errors,
+        not_shortlisted=0,
+        room_errors=room_errors,
+        skipped_rows=0,
+    )
+
+
 @router.get("/export-excel")
 def export_students_excel(
     search: str = Query(default=""),
@@ -1096,3 +1099,4 @@ def export_students_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
+

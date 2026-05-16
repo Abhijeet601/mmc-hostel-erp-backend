@@ -3,11 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
+from reportlab.graphics.barcode import qr
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from ..config import settings
 
@@ -27,137 +28,182 @@ def _clean_value(value: object | None) -> str:
     return text or "-"
 
 
+def _build_qr_value(payload: dict[str, object | None]) -> str:
+    parts = [
+        "Magadh Mahila College Hostel ERP",
+        f"Application: {_clean_value(payload.get('application_number'))}",
+        f"Cycle: {_clean_value(payload.get('cycle_reference'))}",
+        f"Type: {_clean_value(payload.get('application_type'))}",
+        f"Txn: {_clean_value(payload.get('transaction_id'))}",
+    ]
+    return " | ".join(parts)
+
+
+def _photo_or_placeholder(photo_path: object | None) -> Table | Image:
+    path = _clean_value(photo_path)
+    if path != "-":
+        absolute = (BASE_DIR / path).resolve()
+        if absolute.exists():
+            image = Image(str(absolute), width=28 * mm, height=34 * mm)
+            return image
+    table = Table([["PHOTO"]], colWidths=[28 * mm], rowHeights=[34 * mm])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#334155")),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#475569")),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ]
+        )
+    )
+    return table
+
+
+def _qr_block(payload: dict[str, object | None]) -> Table:
+    code = qr.QrCodeWidget(_build_qr_value(payload))
+    bounds = code.getBounds()
+    width = bounds[2] - bounds[0]
+    height = bounds[3] - bounds[1]
+    from reportlab.graphics.shapes import Drawing
+
+    drawing = Drawing(28 * mm, 28 * mm, transform=[28 * mm / width, 0, 0, 28 * mm / height, 0, 0])
+    drawing.add(code)
+    block = Table([[drawing], [Paragraph("Scan for verification", ParagraphStyle("qr", fontSize=7, alignment=1, textColor=colors.HexColor("#475569")))]] , colWidths=[30 * mm])
+    block.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+    return block
+
+
+def _detail_table(rows: list[tuple[str, object | None]], label_style: ParagraphStyle, value_style: ParagraphStyle) -> Table:
+    data = [
+        [Paragraph(f"<b>{_clean_value(label)}</b>", label_style), Paragraph(_clean_value(value), value_style)]
+        for label, value in rows
+    ]
+    table = Table(data, colWidths=[52 * mm, 94 * mm])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#1E3A8A")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.45, colors.HexColor("#BFDBFE")),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+        )
+    )
+    return table
+
+
 def _build_receipt(
     *,
     filename_prefix: str,
     title: str,
-    subtitle: str,
     rows: list[tuple[str, object | None]],
+    payload: dict[str, object | None],
 ) -> str:
     file_path = _receipt_dir() / f"{filename_prefix}_{uuid4().hex[:10]}.pdf"
     styles = getSampleStyleSheet()
-    heading_style = ParagraphStyle(
-        "ReceiptHeading",
-        parent=styles["Heading1"],
-        fontName="Helvetica-Bold",
-        fontSize=18,
-        textColor=colors.HexColor("#0F172A"),
-        spaceAfter=6,
-    )
-    subheading_style = ParagraphStyle(
-        "ReceiptSubheading",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=10,
-        textColor=colors.HexColor("#334155"),
-        leading=14,
-        spaceAfter=14,
-    )
-    value_style = ParagraphStyle(
-        "ReceiptValue",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=9,
-        leading=12,
-        textColor=colors.HexColor("#0F172A"),
-    )
-    label_style = ParagraphStyle(
-        "ReceiptLabel",
-        parent=styles["Normal"],
-        fontName="Helvetica-Bold",
-        fontSize=9,
-        leading=12,
-        textColor=colors.HexColor("#1E293B"),
-    )
+    title_style = ParagraphStyle("title", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=14, alignment=1, textColor=colors.HexColor("#0F172A"))
+    sub_style = ParagraphStyle("sub", parent=styles["Normal"], fontName="Helvetica", fontSize=8.5, leading=12, alignment=1, textColor=colors.HexColor("#334155"))
+    label_style = ParagraphStyle("label", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.2, textColor=colors.HexColor("#0F172A"))
+    value_style = ParagraphStyle("value", parent=styles["Normal"], fontName="Helvetica", fontSize=8.4, leading=11, textColor=colors.HexColor("#1E293B"))
+    note_style = ParagraphStyle("note", parent=styles["Normal"], fontName="Helvetica", fontSize=8, leading=11, textColor=colors.HexColor("#475569"))
 
-    table_data = [
-        [
-            Paragraph(f"<b>{_clean_value(label)}</b>", label_style),
-            Paragraph(_clean_value(value), value_style),
-        ]
-        for label, value in rows
+    meta_rows = [
+        ("Application No.", payload.get("application_number")),
+        ("Application Type", "Hostel Renewal" if payload.get("application_type") == "renewal" else "New Registration"),
+        ("Cycle Ref.", payload.get("cycle_reference")),
+        ("Renewal Ref.", payload.get("renewal_reference_number")),
     ]
 
-    table = Table(table_data, colWidths=[58 * mm, 120 * mm], repeatRows=0)
-    table.setStyle(
+    doc = SimpleDocTemplate(str(file_path), pagesize=A4, rightMargin=12 * mm, leftMargin=12 * mm, topMargin=10 * mm, bottomMargin=12 * mm)
+    story = []
+
+    story.append(Paragraph("MAGADH MAHILA COLLEGE, PATNA UNIVERSITY", title_style))
+    story.append(Paragraph("Hostel ERP Acknowledgement / Payment Receipt", sub_style))
+    story.append(Paragraph(title, sub_style))
+    story.append(Spacer(1, 4 * mm))
+
+    hero = Table(
+        [[
+            _detail_table(meta_rows, label_style, value_style),
+            Table([[_photo_or_placeholder(payload.get("student_photo_path"))], [_qr_block(payload)]], colWidths=[34 * mm]),
+        ]],
+        colWidths=[148 * mm, 34 * mm],
+    )
+    hero.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.append(hero)
+    story.append(Spacer(1, 4 * mm))
+
+    story.append(_detail_table(rows, label_style, value_style))
+    story.append(Spacer(1, 4 * mm))
+
+    signature = Table(
+        [[
+            Paragraph("Student Signature", note_style),
+            Paragraph("Hostel Office Verification", note_style),
+            Paragraph("Authorized Signature", note_style),
+        ]],
+        colWidths=[60 * mm, 60 * mm, 58 * mm],
+        rowHeights=[16 * mm],
+    )
+    signature.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEF2FF")),
-                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
-                ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#CBD5E1")),
-                ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LINEABOVE", (0, 0), (-1, -1), 0.65, colors.HexColor("#334155")),
+                ("TOPPADDING", (0, 0), (-1, -1), 10 * mm),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ]
         )
     )
+    story.append(signature)
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("This is a system-generated official hostel ERP receipt. Carry the printed copy during verification.", note_style))
 
-    doc = SimpleDocTemplate(
-        str(file_path),
-        pagesize=A4,
-        rightMargin=18 * mm,
-        leftMargin=18 * mm,
-        topMargin=16 * mm,
-        bottomMargin=16 * mm,
-    )
-
-    story = [
-        Paragraph("Magadh Mahila College", heading_style),
-        Paragraph(title, heading_style),
-        Paragraph(subtitle, subheading_style),
-        Spacer(1, 6),
-        table,
-    ]
     doc.build(story)
     return str(file_path.relative_to(BASE_DIR)).replace("\\", "/")
 
 
 def generate_application_fee_receipt(*, payload: dict[str, object | None]) -> str:
     rows = [
-        ("Application Number", payload.get("application_number")),
         ("Student Name", payload.get("student_name")),
+        ("Application Number", payload.get("application_number")),
+        ("Renewal Reference", payload.get("renewal_reference_number")),
         ("Course", payload.get("course_name")),
         ("Session", payload.get("session")),
         ("Transaction ID", payload.get("transaction_id")),
         ("Payment Date", payload.get("payment_date")),
-        ("Amount", payload.get("amount")),
+        ("Paid Amount", payload.get("amount")),
     ]
     return _build_receipt(
         filename_prefix=f"application_fee_{payload.get('application_number', 'student')}",
-        title="Application Fee Receipt",
-        subtitle="Registration fee payment acknowledgement.",
+        title="Application / Renewal Fee Receipt",
         rows=rows,
+        payload=payload,
     )
 
 
 def generate_hostel_receipt(*, payload: dict[str, object | None]) -> str:
     rows = [
-        ("Application Number", payload.get("application_number")),
         ("Student Name", payload.get("student_name")),
-        ("Gender", payload.get("gender")),
-        ("Date of Birth", payload.get("date_of_birth")),
-        ("Mobile Number", payload.get("mobile_number")),
-        ("Email", payload.get("email")),
-        ("Blood Group", payload.get("blood_group")),
+        ("Application Number", payload.get("application_number")),
+        ("Renewal Reference", payload.get("renewal_reference_number")),
+        ("Course Name", payload.get("course_name")),
+        ("Program", payload.get("program")),
+        ("Session", payload.get("session")),
+        ("Roll Number", payload.get("roll_number")),
         ("Aadhaar Number", payload.get("aadhaar_number")),
+        ("Blood Group", payload.get("blood_group")),
         ("Category", payload.get("category")),
         ("Religion", payload.get("religion")),
-        ("Nationality", payload.get("nationality")),
         ("Father Name", payload.get("father_name")),
-        ("Mother Name", payload.get("mother_name")),
         ("Guardian Name", payload.get("local_guardian_name")),
         ("Guardian Mobile", payload.get("guardian_mobile_number")),
-        ("Correspondence Address", payload.get("correspondence_address")),
-        ("Admission Application ID", payload.get("admission_application_id")),
-        ("College Name", payload.get("college_name")),
-        ("Course Name", payload.get("course_name")),
-        ("Honours Subject", payload.get("honours_subject")),
-        ("Session", payload.get("session")),
-        ("Program", payload.get("program")),
-        ("Roll Number", payload.get("roll_number")),
+        ("Address", payload.get("correspondence_address")),
         ("Hostel Name", payload.get("hostel_name")),
         ("Payment Amount", payload.get("amount")),
         ("Transaction ID", payload.get("transaction_id")),
@@ -165,7 +211,7 @@ def generate_hostel_receipt(*, payload: dict[str, object | None]) -> str:
     ]
     return _build_receipt(
         filename_prefix=f"hostel_fee_{payload.get('application_number', 'student')}",
-        title="Hostel Allocation Receipt",
-        subtitle="Final hostel allotment payment receipt.",
+        title="Hostel Allotment / Renewal Receipt",
         rows=rows,
+        payload=payload,
     )

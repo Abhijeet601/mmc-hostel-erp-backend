@@ -1,33 +1,37 @@
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import get_db
 from ..erp_dependencies import get_current_student
-from ..erp_models import ERPApplication, ERPApplicationPayment, ERPHostelPayment, ERPStudent
+from ..erp_models import ERPApplication, ERPApplicationPayment, ERPComplaint, ERPHostelPayment, ERPStudent
 from ..erp_security import create_access_token, generate_random_password, hash_password, verify_password
 from ..erp_schemas import (
     ApplicationFormPayload,
+    ComplaintCreateRequest,
+    ComplaintListResponse,
+    ComplaintResponse,
     GenericMessageResponse,
     PaymentResponse,
     StudentDashboardResponse,
     StudentLoginRequest,
     StudentLoginResponse,
+    StudentPasswordResetRequest,
     StudentRegistrationRequest,
     StudentRegistrationResponse,
 )
 from ..services.application_number import generate_application_number
-from ..services.email_service import send_receipt_email
 from ..services.erp_service import (
     APPLICATION_FIELDS,
+    PAYMENT_MODE_DEMO,
+    PAYMENT_STATUS_PENDING,
     REQUIRED_SUBMISSION_FIELDS,
     application_summary,
     build_asset_url,
@@ -35,14 +39,17 @@ from ..services.erp_service import (
     calculate_percentage,
     can_edit_application,
     clean_text,
+    current_cycle_reference,
     ensure_valid_hostel_name,
     latest_application_payment,
     latest_hostel_payment,
+    next_renewal_cycle_reference,
     parse_optional_date,
     parse_optional_decimal,
+    payment_reference,
     utc_now,
 )
-from ..services.receipt_service import generate_application_fee_receipt, generate_hostel_receipt
+from ..services.payment_service import approve_application_payment, approve_hostel_payment, transaction_exists
 from ..utils.file_storage import save_upload_file
 
 router = APIRouter(tags=["erp-student"])
@@ -66,6 +73,13 @@ def _normalize_login_identifier(value: str) -> str:
 
 def _normalize_mobile_number(value: str) -> str:
     return "".join(char for char in value if char.isdigit()) or value.strip()
+
+
+def _find_student_by_identifier(db: Session, identifier: str) -> ERPStudent | None:
+    normalized_identifier = _normalize_login_identifier(identifier)
+    if "@" in normalized_identifier:
+        return db.scalar(select(ERPStudent).where(ERPStudent.email == _normalize_email(normalized_identifier)))
+    return db.scalar(select(ERPStudent).where(ERPStudent.application_number == normalized_identifier))
 
 
 def _existing_student_by_email_or_mobile(db: Session, email: str, mobile_number: str) -> ERPStudent | None:
@@ -126,6 +140,10 @@ async def _parse_application_form(request: Request) -> tuple[dict[str, object | 
 def _get_or_create_application(student: ERPStudent, db: Session) -> ERPApplication:
     application = student.application
     if application:
+        if not application.active_cycle_reference:
+            application.active_cycle_reference = current_cycle_reference(student, application)
+        if not application.application_type:
+            application.application_type = "new"
         return application
 
     application = ERPApplication(
@@ -134,6 +152,8 @@ def _get_or_create_application(student: ERPStudent, db: Session) -> ERPApplicati
         mobile_number=student.mobile_number,
         date_of_birth=student.date_of_birth,
         college_name="Magadh Mahila College",
+        application_type="new",
+        active_cycle_reference=current_cycle_reference(student, None),
     )
     db.add(application)
     db.flush()
@@ -181,10 +201,22 @@ def _validate_submission(application: ERPApplication) -> list[str]:
     return missing_fields
 
 
-def _receipt_absolute_path(relative_path: str | None) -> str | None:
-    if not relative_path:
-        return None
-    return str((Path(__file__).resolve().parents[2] / relative_path).resolve())
+def _reset_for_new_cycle(student: ERPStudent, application: ERPApplication) -> None:
+    application.application_type = "renewal"
+    application.previous_application_number = student.application_number
+    application.active_cycle_reference = next_renewal_cycle_reference(student, application)
+    application.renewal_reference_number = application.active_cycle_reference.replace("APP-", "REN-", 1)
+    application.form_status = "draft"
+    application.is_verified = False
+    application.is_shortlisted = False
+    application.preferred_hostel = None
+    application.allocated_hostel = None
+    application.allocated_room_id = None
+    application.bed_number = None
+    application.submitted_at = None
+    application.verified_at = None
+    application.shortlisted_at = None
+    application.hostel_allocated_at = None
 
 
 @router.post("/register", response_model=StudentRegistrationResponse, status_code=status.HTTP_201_CREATED)
@@ -223,14 +255,7 @@ def register_student(payload: StudentRegistrationRequest, db: Session = Depends(
 @router.post("/login", response_model=StudentLoginResponse)
 def login_student(payload: StudentLoginRequest, db: Session = Depends(get_db)) -> StudentLoginResponse:
     login_identifier = _normalize_login_identifier(payload.email)
-    student = None
-    if "@" in login_identifier:
-        email = _normalize_email(login_identifier)
-        student = db.scalar(select(ERPStudent).where(ERPStudent.email == email))
-    else:
-        student = db.scalar(
-            select(ERPStudent).where(ERPStudent.application_number == login_identifier)
-        )
+    student = _find_student_by_identifier(db, login_identifier)
 
     if not student or not verify_password(payload.password, student.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
@@ -251,6 +276,28 @@ def login_student(payload: StudentLoginRequest, db: Session = Depends(get_db)) -
     )
 
 
+@router.post("/reset-password", response_model=GenericMessageResponse)
+def reset_student_password(
+    payload: StudentPasswordResetRequest,
+    db: Session = Depends(get_db),
+) -> GenericMessageResponse:
+    student = _find_student_by_identifier(db, payload.identifier)
+    if not student:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student record not found.")
+
+    normalized_mobile_number = _normalize_mobile_number(payload.mobile_number)
+    if student.date_of_birth != payload.date_of_birth or _normalize_mobile_number(student.mobile_number) != normalized_mobile_number:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Student verification details do not match.",
+        )
+
+    student.password_hash = hash_password(payload.new_password)
+    db.add(student)
+    db.commit()
+    return GenericMessageResponse(message="Password reset completed successfully.")
+
+
 @router.get("/application", response_model=ApplicationFormPayload)
 def get_application_form(
     student: ERPStudent = Depends(get_current_student),
@@ -261,6 +308,10 @@ def get_application_form(
 
     return ApplicationFormPayload(
         application_number=student.application_number,
+        application_type=application.application_type if application else "new",
+        cycle_reference=application.active_cycle_reference if application else current_cycle_reference(student, application),
+        renewal_reference_number=application.renewal_reference_number if application else None,
+        previous_application_number=application.previous_application_number if application else None,
         email=student.email,
         mobile_number=student.mobile_number,
         registration_date_of_birth=student.date_of_birth,
@@ -268,6 +319,18 @@ def get_application_form(
         is_editable=can_edit_application(application),
         data=summary,
     )
+
+
+@router.post("/application/start-renewal", response_model=GenericMessageResponse)
+def start_hostel_renewal(
+    db: Session = Depends(get_db),
+    student: ERPStudent = Depends(get_current_student),
+) -> GenericMessageResponse:
+    application = _get_or_create_application(student, db)
+    _reset_for_new_cycle(student, application)
+    db.add(application)
+    db.commit()
+    return GenericMessageResponse(message="Hostel renewal started. Existing data has been loaded into the same application form.")
 
 
 @router.post("/application/draft", response_model=GenericMessageResponse)
@@ -350,56 +413,45 @@ def pay_application_fee(
     application = student.application
     if not application or application.form_status != "submitted":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Submit the application first.")
-    if latest_application_payment(application):
+    existing_payment = latest_application_payment(application)
+    if existing_payment and existing_payment.status == PAYMENT_STATUS_PENDING:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Application fee is waiting for admin approval.")
+    if existing_payment and existing_payment.status == "success":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Application fee is already paid.")
 
     transaction_id = clean_text(payload.transaction_id) or f"APP-DEMO-{uuid4().hex[:12].upper()}"
-    existing_payment = db.scalar(
-        select(ERPApplicationPayment).where(ERPApplicationPayment.transaction_id == transaction_id)
-    )
-    if existing_payment:
+    if transaction_exists(db, transaction_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Transaction ID already exists.")
 
     payment_date = utc_now()
-    receipt_path = generate_application_fee_receipt(
-        payload={
-            "application_number": student.application_number,
-            "student_name": application.name,
-            "course_name": application.course_name,
-            "session": application.session,
-            "transaction_id": transaction_id,
-            "payment_date": payment_date.strftime("%d %b %Y %I:%M %p"),
-            "amount": f"INR {settings.APP_PAYMENT_AMOUNT}",
-        }
-    )
-
     payment = ERPApplicationPayment(
         student_id=student.id,
         application_id=application.id,
+        cycle_reference=application.active_cycle_reference,
         transaction_id=transaction_id,
         amount=settings.APP_PAYMENT_AMOUNT,
-        receipt_path=receipt_path,
+        payment_mode=PAYMENT_MODE_DEMO,
+        status=PAYMENT_STATUS_PENDING,
         payment_date=payment_date,
     )
-    email_status = send_receipt_email(
-        recipient=student.email,
-        student_name=application.name or "Student",
-        subject="MMC Hostel ERP Application Fee Receipt",
-        body=(
-            f"Your application fee payment of INR {settings.APP_PAYMENT_AMOUNT} has been recorded. "
-            f"Transaction ID: {transaction_id}."
-        ),
-        receipt_path=_receipt_absolute_path(receipt_path),
-    )
-    payment.email_sent = email_status == "sent"
-
     db.add(payment)
+    db.flush()
+
+    email_status = "not_sent"
+    message = "Application fee submitted and is waiting for admin approval."
+    if settings.DEMO_AUTO_APPROVE:
+        email_status = approve_application_payment(student=student, application=application, payment=payment)
+        message = "Application fee approved automatically in demo mode."
+
     db.commit()
 
     return PaymentResponse(
-        message="Application fee recorded successfully.",
+        message=message,
+        payment_id=payment.id,
+        payment_reference=payment_reference("application", payment.id),
+        status=payment.status,
         transaction_id=transaction_id,
-        receipt_url=build_asset_url(receipt_path),
+        receipt_url=build_asset_url(payment.receipt_path),
         email_status=email_status,
         amount=float(settings.APP_PAYMENT_AMOUNT),
     )
@@ -416,78 +468,83 @@ def pay_hostel_fee(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Student is not shortlisted yet.")
     if not application.allocated_hostel:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hostel allocation is pending.")
-    if latest_hostel_payment(application):
+    existing_payment = latest_hostel_payment(application)
+    if existing_payment and existing_payment.status == PAYMENT_STATUS_PENDING:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hostel fee is waiting for admin approval.")
+    if existing_payment and existing_payment.status == "success":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hostel fee is already paid.")
 
     transaction_id = clean_text(payload.transaction_id) or f"HOSTEL-DEMO-{uuid4().hex[:12].upper()}"
-    existing_payment = db.scalar(
-        select(ERPHostelPayment).where(ERPHostelPayment.transaction_id == transaction_id)
-    )
-    if existing_payment:
+    if transaction_exists(db, transaction_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Transaction ID already exists.")
 
     amount = settings.hostel_fee(application.allocated_hostel)
     payment_date = utc_now()
-    receipt_path = generate_hostel_receipt(
-        payload={
-            "application_number": student.application_number,
-            "student_name": application.name,
-            "gender": application.gender,
-            "date_of_birth": application.date_of_birth,
-            "mobile_number": student.mobile_number,
-            "email": student.email,
-            "blood_group": application.blood_group,
-            "aadhaar_number": application.aadhaar_number,
-            "category": application.category,
-            "religion": application.religion,
-            "nationality": application.nationality,
-            "father_name": application.father_name,
-            "mother_name": application.mother_name,
-            "local_guardian_name": application.local_guardian_name,
-            "guardian_mobile_number": application.guardian_mobile_number,
-            "correspondence_address": application.correspondence_address,
-            "admission_application_id": application.admission_application_id,
-            "college_name": application.college_name,
-            "course_name": application.course_name,
-            "honours_subject": application.honours_subject,
-            "session": application.session,
-            "program": application.program,
-            "roll_number": application.roll_number,
-            "hostel_name": application.allocated_hostel,
-            "amount": f"INR {amount}",
-            "transaction_id": transaction_id,
-            "payment_date": payment_date.strftime("%d %b %Y %I:%M %p"),
-        }
-    )
-
     payment = ERPHostelPayment(
         student_id=student.id,
         application_id=application.id,
+        cycle_reference=application.active_cycle_reference,
         hostel_name=application.allocated_hostel,
         transaction_id=transaction_id,
         amount=amount,
-        receipt_path=receipt_path,
+        payment_mode=PAYMENT_MODE_DEMO,
+        status=PAYMENT_STATUS_PENDING,
         payment_date=payment_date,
     )
-    email_status = send_receipt_email(
-        recipient=student.email,
-        student_name=application.name or "Student",
-        subject="MMC Hostel ERP Final Hostel Receipt",
-        body=(
-            f"Your hostel payment of INR {amount} for {application.allocated_hostel} has been recorded. "
-            f"Transaction ID: {transaction_id}."
-        ),
-        receipt_path=_receipt_absolute_path(receipt_path),
-    )
-    payment.email_sent = email_status == "sent"
-
     db.add(payment)
+    db.flush()
+
+    email_status = "not_sent"
+    message = "Hostel fee submitted and is waiting for admin approval."
+    if settings.DEMO_AUTO_APPROVE:
+        email_status = approve_hostel_payment(student=student, application=application, payment=payment)
+        message = "Hostel fee approved automatically in demo mode."
+
     db.commit()
 
     return PaymentResponse(
-        message="Hostel fee recorded successfully.",
+        message=message,
+        payment_id=payment.id,
+        payment_reference=payment_reference("hostel", payment.id),
+        status=payment.status,
         transaction_id=transaction_id,
-        receipt_url=build_asset_url(receipt_path),
+        receipt_url=build_asset_url(payment.receipt_path),
         email_status=email_status,
         amount=float(amount),
     )
+
+
+@router.get("/complaints", response_model=ComplaintListResponse)
+def list_student_complaints(
+    db: Session = Depends(get_db),
+    student: ERPStudent = Depends(get_current_student),
+) -> ComplaintListResponse:
+    items = list(
+        db.scalars(
+            select(ERPComplaint)
+            .where(ERPComplaint.student_id == student.id)
+            .order_by(ERPComplaint.created_at.desc())
+        )
+    )
+    return ComplaintListResponse(total=len(items), items=[ComplaintResponse.model_validate(item) for item in items])
+
+
+@router.post("/complaints", response_model=ComplaintResponse, status_code=status.HTTP_201_CREATED)
+def create_student_complaint(
+    payload: ComplaintCreateRequest,
+    db: Session = Depends(get_db),
+    student: ERPStudent = Depends(get_current_student),
+) -> ComplaintResponse:
+    next_id = (db.scalar(select(func.count(ERPComplaint.id))) or 0) + 1
+    complaint = ERPComplaint(
+        student_id=student.id,
+        application_id=student.application.id if student.application else None,
+        ticket_number=f"MMC-CMP-{next_id:05d}",
+        subject=clean_text(payload.subject) or "Complaint",
+        category=clean_text(payload.category) or "General",
+        description=clean_text(payload.description) or "",
+    )
+    db.add(complaint)
+    db.commit()
+    db.refresh(complaint)
+    return ComplaintResponse.model_validate(complaint)

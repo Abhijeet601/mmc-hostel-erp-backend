@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class StudentRegistrationRequest(BaseModel):
@@ -36,12 +36,26 @@ class StudentLoginResponse(BaseModel):
     student_name: str | None = None
 
 
+class StudentPasswordResetRequest(BaseModel):
+    identifier: str
+    date_of_birth: date
+    mobile_number: str
+    new_password: str
+
+
 class StatusTrackerStep(BaseModel):
     key: str
     label: str
     state: str
     date: datetime | None = None
     description: str
+
+
+class NotificationItem(BaseModel):
+    title: str
+    description: str
+    tone: str = "info"
+    created_at: datetime | None = None
 
 
 class ReceiptSummary(BaseModel):
@@ -54,6 +68,10 @@ class ReceiptSummary(BaseModel):
 
 class ApplicationFormPayload(BaseModel):
     application_number: str
+    application_type: str = "new"
+    cycle_reference: str | None = None
+    renewal_reference_number: str | None = None
+    previous_application_number: str | None = None
     email: str
     mobile_number: str
     registration_date_of_birth: date
@@ -64,6 +82,10 @@ class ApplicationFormPayload(BaseModel):
 
 class StudentDashboardResponse(BaseModel):
     application_number: str
+    application_type: str = "new"
+    cycle_reference: str | None = None
+    renewal_reference_number: str | None = None
+    can_start_renewal: bool = False
     student_name: str | None = None
     email: str
     mobile_number: str
@@ -80,12 +102,17 @@ class StudentDashboardResponse(BaseModel):
     can_pay_hostel_fee: bool
     preferred_hostel: str | None = None
     allocated_hostel: str | None = None
+    allotted_category: str | None = None
+    hostel_block: str | None = None
+    room_number: str | None = None
+    bed_number: str | None = None
     application_fee_amount: int
     hostel_fee_amount: int | None = None
     photo_url: str | None = None
     application_receipt: ReceiptSummary | None = None
     hostel_receipt: ReceiptSummary | None = None
     tracker: list[StatusTrackerStep]
+    notifications: list[NotificationItem] = []
     summary: dict[str, object | None]
 
 
@@ -105,10 +132,43 @@ class GenericMessageResponse(BaseModel):
 
 class PaymentResponse(BaseModel):
     message: str
+    payment_id: int
+    payment_reference: str
+    status: str
     transaction_id: str
     receipt_url: str | None = None
     email_status: str
     amount: float
+
+
+class ComplaintCreateRequest(BaseModel):
+    subject: str
+    category: str
+    description: str
+
+
+class ComplaintUpdateRequest(BaseModel):
+    status: str
+    resolution_note: str | None = None
+
+
+class ComplaintResponse(BaseModel):
+    id: int
+    ticket_number: str
+    subject: str
+    category: str
+    description: str
+    status: str
+    resolution_note: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ComplaintListResponse(BaseModel):
+    total: int
+    items: list[ComplaintResponse]
 
 
 class ERPStudentSummary(BaseModel):
@@ -128,6 +188,10 @@ class ERPStudentSummary(BaseModel):
     hostel_status: str
     preferred_hostel: str | None = None
     allocated_hostel: str | None = None
+    allotted_category: str | None = None
+    hostel_block: str | None = None
+    room_number: str | None = None
+    bed_number: str | None = None
     application_submitted_at: datetime | None = None
     verified_at: datetime | None = None
     shortlisted_at: datetime | None = None
@@ -144,6 +208,13 @@ class ChartDatum(BaseModel):
     value: int
 
 
+class RecentActivity(BaseModel):
+    title: str
+    description: str
+    timestamp: datetime | None = None
+    tone: str = "info"
+
+
 class AdminDashboardResponse(BaseModel):
     total_applications: int
     total_paid: int
@@ -152,12 +223,17 @@ class AdminDashboardResponse(BaseModel):
     verified_students: int
     hostel_allocated_students: int
     hostel_paid_students: int
+    old_students: int = 0
+    total_rooms: int = 0
+    occupied_beds: int = 0
+    available_beds: int = 0
     application_revenue: float
     hostel_revenue: float
     by_course: list[ChartDatum]
     by_category: list[ChartDatum]
     by_status: list[ChartDatum]
     by_hostel: list[ChartDatum]
+    recent_activities: list[RecentActivity] = []
 
 
 class AdminVerifyRequest(BaseModel):
@@ -169,7 +245,57 @@ class AdminShortlistRequest(BaseModel):
 
 
 class AdminAllocationRequest(BaseModel):
+    hostel_name: str | None = None
+    room_id: int | None = None
+    bed_number: str | None = None
+
+
+class AdminPaymentSummary(BaseModel):
+    id: str
+    payment_id: int
+    payment_type: str
+    status: str
+    payment_mode: str
+    transaction_id: str
+    amount: float
+    payment_date: datetime
+    receipt_url: str | None = None
+    application_number: str
+    student_id: int
+    student_name: str | None = None
+    course_name: str | None = None
+    hostel_name: str | None = None
+
+
+class AdminPaymentListResponse(BaseModel):
+    total: int
+    items: list[AdminPaymentSummary]
+
+
+class HostelRoomSummary(BaseModel):
+    id: int
     hostel_name: str
+    block_name: str
+    room_number: str
+    bed_capacity: int
+    occupied_beds: int
+    available_beds: int
+    is_active: bool
+    notes: str | None = None
+
+
+class HostelRoomListResponse(BaseModel):
+    total: int
+    items: list[HostelRoomSummary]
+
+
+class AdminHostelRoomPayload(BaseModel):
+    hostel_name: str
+    block_name: str
+    room_number: str
+    bed_capacity: int
+    is_active: bool = True
+    notes: str | None = None
 
 
 class ShortlistUploadResponse(BaseModel):
@@ -181,6 +307,82 @@ class ShortlistUploadResponse(BaseModel):
     total_rows: int
 
 
+class BulkShortlistUploadResponse(BaseModel):
+    message: str
+    processed_rows: int
+    shortlisted_yes: int
+    shortlisted_no: int
+    updated_allotted_category: int
+    invalid_registrations: int = 0
+    skipped_rows: int = 0
+
+
+class BulkAllocationUploadResponse(BaseModel):
+    message: str
+    processed_rows: int
+    allocated: int
+    auto_assigned_beds: int = 0
+    invalid_registrations: int = 0
+    not_shortlisted: int = 0
+    room_errors: int = 0
+    skipped_rows: int = 0
+
+
+class BulkCombinedUploadResponse(BaseModel):
+    message: str
+    processed_rows: int
+    shortlisted_yes: int
+    shortlisted_no: int
+    updated_allotted_category: int
+    allocated: int
+    auto_assigned_beds: int = 0
+    invalid_registrations: int = 0
+    not_shortlisted: int = 0
+    room_errors: int = 0
+    skipped_rows: int = 0
+    created: int = 0
+    updated: int = 0
+    generated_ids: int = 0
+    error_report_url: str | None = None
+
+
+class BulkOldStudentIdPreview(BaseModel):
+    last_id: str | None = None
+    next_ids: list[str] = Field(default_factory=list)
+    generated_count: int = 0
+
+
+class BulkOldStudentRowResult(BaseModel):
+    row_number: int
+    action: str
+    matched_by: str | None = None
+    changed_fields: list[str] = Field(default_factory=list)
+    generated_hostel_id: bool = False
+    allocation_updated: bool = False
+    messages: list[str] = Field(default_factory=list)
+    current_values: dict[str, str | None] = Field(default_factory=dict)
+    proposed_values: dict[str, str | None] = Field(default_factory=dict)
+
+
+class BulkUpsertOldStudentsResponse(BaseModel):
+    mode: str
+    message: str
+    total: int
+    created: int
+    updated: int
+    errors: int
+    success_count: int
+    update_count: int
+    error_count: int
+    generated_ids: int = 0
+    allocated: int = 0
+    error_rows: list[dict[str, object | None]] = Field(default_factory=list)
+    error_details: list[dict[str, object | None]] = Field(default_factory=list)
+    rows: list[BulkOldStudentRowResult] = Field(default_factory=list)
+    hostel_id_preview: BulkOldStudentIdPreview | None = None
+    error_report_url: str | None = None
+
+
 class ReceiptSummaryModel(BaseModel):
     payment_type: str
     amount: float
@@ -189,3 +391,72 @@ class ReceiptSummaryModel(BaseModel):
     receipt_url: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class OldStudentBase(BaseModel):
+    student_name: str
+    admission_id: str | None = None
+    roll_number: str | None = None
+    course_name: str
+    session: str
+    mobile_number: str
+    email: str | None = None
+    category: str | None = None
+    hostel_name: str | None = None
+    block_name: str | None = None
+    room_number: str | None = None
+    bed_number: str | None = None
+    old_student_status: str = "ACTIVE"
+
+
+class OldStudentCreate(OldStudentBase):
+    hostel_id: str
+
+
+class OldStudentUpdate(OldStudentBase):
+    pass
+
+
+class OldStudentResponse(OldStudentBase):
+    id: int
+    hostel_id: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OldStudentListResponse(BaseModel):
+    total: int
+    items: list[OldStudentResponse]
+
+
+class HostelIdGenerateRequest(BaseModel):
+    count: int = 1
+
+
+class HostelIdGenerateResponse(BaseModel):
+    hostel_ids: list[str]
+    prefix: str
+    next_sequence: int
+
+
+class ActivityLogBase(BaseModel):
+    entity_type: str
+    entity_id: str
+    action: str
+    old_values: str | None = None
+    new_values: str | None = None
+
+
+class ActivityLogResponse(ActivityLogBase):
+    id: int
+    admin_id: int | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ActivityLogListResponse(BaseModel):
+    total: int
+    items: list[ActivityLogResponse]

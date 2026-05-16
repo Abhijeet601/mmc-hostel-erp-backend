@@ -1,0 +1,137 @@
+[
+  {
+    "id": "old-student-bulk-tab",
+    "type": "tab",
+    "label": "Old Student Bulk Upsert",
+    "disabled": false,
+    "info": "Sample Node-RED flow for previewing and committing old-student bulk upserts through FastAPI."
+  },
+  {
+    "id": "old-student-bulk-note",
+    "type": "comment",
+    "z": "old-student-bulk-tab",
+    "name": "Workflow",
+    "info": "1. Upload or parse Excel into msg.payload.rows\\n2. Set preview_only / generate_ids / update_existing / allocate_rooms\\n3. POST JSON to /api/bulk-upsert-old-students\\n4. Display the returned summary and error report link",
+    "x": 250,
+    "y": 60,
+    "wires": []
+  },
+  {
+    "id": "old-student-preview-inject",
+    "type": "inject",
+    "z": "old-student-bulk-tab",
+    "name": "Preview Sample",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "payload": "{\"rows\":[{\"row_number\":2,\"name\":\"Asha Kumari\",\"email\":\"asha.bulk@example.com\",\"course\":\"B.A.\",\"category\":\"GEN\",\"hostel\":\"Vaidehi Hostel\",\"block\":\"A\",\"room\":\"101\",\"bed\":\"\",\"hostel_id\":\"\"}],\"preview_only\":true,\"generate_ids\":true,\"update_existing\":true,\"allocate_rooms\":true}",
+    "payloadType": "json",
+    "x": 150,
+    "y": 140,
+    "wires": [
+      [
+        "old-student-build-request"
+      ]
+    ]
+  },
+  {
+    "id": "old-student-commit-inject",
+    "type": "inject",
+    "z": "old-student-bulk-tab",
+    "name": "Commit Sample",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "payload": "{\"rows\":[{\"row_number\":2,\"name\":\"Asha Kumari\",\"email\":\"asha.bulk@example.com\",\"course\":\"B.A.\",\"category\":\"GEN\",\"hostel\":\"Vaidehi Hostel\",\"block\":\"A\",\"room\":\"101\",\"bed\":\"\",\"hostel_id\":\"\"}],\"preview_only\":false,\"generate_ids\":true,\"update_existing\":true,\"allocate_rooms\":true}",
+    "payloadType": "json",
+    "x": 146,
+    "y": 200,
+    "wires": [
+      [
+        "old-student-build-request"
+      ]
+    ]
+  },
+  {
+    "id": "old-student-build-request",
+    "type": "function",
+    "z": "old-student-bulk-tab",
+    "name": "Attach ERP Auth",
+    "func": "const apiBase = (env.get('ERP_API_BASE') || 'http://127.0.0.1:8000').replace(/\\/$/, '');\nconst token = env.get('ERP_ADMIN_TOKEN');\nif (!token) {\n    node.error('Set ERP_ADMIN_TOKEN in Node-RED environment variables before running this flow.');\n    return null;\n}\nmsg.method = 'POST';\nmsg.url = `${apiBase}/api/bulk-upsert-old-students`;\nmsg.headers = {\n    Authorization: `Bearer ${token}`,\n    'Content-Type': 'application/json',\n    Accept: 'application/json'\n};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 420,
+    "y": 170,
+    "wires": [
+      [
+        "old-student-http-request"
+      ]
+    ]
+  },
+  {
+    "id": "old-student-http-request",
+    "type": "http request",
+    "z": "old-student-bulk-tab",
+    "name": "FastAPI Bulk Upsert",
+    "method": "use",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 680,
+    "y": 170,
+    "wires": [
+      [
+        "old-student-format-summary"
+      ]
+    ]
+  },
+  {
+    "id": "old-student-format-summary",
+    "type": "function",
+    "z": "old-student-bulk-tab",
+    "name": "Format Summary",
+    "func": "const data = msg.payload || {};\nmsg.payload = {\n    mode: data.mode,\n    total: data.total,\n    created: data.created,\n    updated: data.updated,\n    errors: data.errors,\n    next_ids: data.hostel_id_preview?.next_ids || [],\n    error_report_url: data.error_report_url || null,\n    error_rows: data.error_rows || []\n};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 930,
+    "y": 170,
+    "wires": [
+      [
+        "old-student-summary-debug"
+      ]
+    ]
+  },
+  {
+    "id": "old-student-summary-debug",
+    "type": "debug",
+    "z": "old-student-bulk-tab",
+    "name": "Bulk Summary",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1160,
+    "y": 170,
+    "wires": []
+  }
+]

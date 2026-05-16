@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: hostel_erp
+      POSTGRES_USER: hostel
+      POSTGRES_PASSWORD: mahila123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hostel -d hostel_erp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nodered:
+    image: nodered/node-red:latest
+    restart: always
+    ports:
+      - "1880:1880"
+    volumes:
+      - nodered_data:/data
+    environment:
+      - FLOWS=flows.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  fastapi:
+    build: .
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql://hostel:mahila123@postgres:5432/hostel_erp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  postgres_data:
+  nodered_data:

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     APP_PAYMENT_AMOUNT: int = 1000
     VAIDEHI_HOSTEL_FEE: int = 10000
     MAHIMA_HOSTEL_FEE: int = 12000
+    DEMO_AUTO_APPROVE: bool = False
 
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = "admin123"
