@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     )
     API_PREFIX: str = "/api"
     ADMIN_PREFIX: str = "/admin"
-    DATABASE_URL: str = "sqlite:///./hostel_erp.db"
+    DATABASE_URL: str = "mysql+pymysql://root:JKHmMYwoqxSNSrUXwRxiyFnZyvIXqFwN@switchyard.proxy.rlwy.net:51714/railway"
 
     JWT_SECRET_KEY: str = Field(
         default="change-this-secret-in-production",

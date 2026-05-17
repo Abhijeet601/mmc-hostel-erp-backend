@@ -107,16 +107,36 @@ def migrate_admin_users_schema(engine: Engine) -> None:
             )
 
         try:
-            connection.execute(
-                text("CREATE UNIQUE INDEX IF NOT EXISTS ix_admin_users_username ON admin_users (username)")
-            )
+            # MySQL doesn't support CREATE INDEX IF NOT EXISTS, check manually
+            result = connection.execute(
+                text("""
+                    SELECT 1 FROM information_schema.STATISTICS 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                    AND TABLE_NAME = 'admin_users' 
+                    AND INDEX_NAME = 'ix_admin_users_username'
+                """)
+            ).fetchone()
+            if not result:
+                connection.execute(
+                    text("CREATE UNIQUE INDEX ix_admin_users_username ON admin_users (username)")
+                )
         except Exception:
             logger.warning("Unable to create unique index on admin_users.username", exc_info=True)
 
         try:
-            connection.execute(
-                text("CREATE UNIQUE INDEX IF NOT EXISTS ix_admin_users_email ON admin_users (email)")
-            )
+            # MySQL doesn't support CREATE INDEX IF NOT EXISTS, check manually
+            result = connection.execute(
+                text("""
+                    SELECT 1 FROM information_schema.STATISTICS 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                    AND TABLE_NAME = 'admin_users' 
+                    AND INDEX_NAME = 'ix_admin_users_email'
+                """)
+            ).fetchone()
+            if not result:
+                connection.execute(
+                    text("CREATE UNIQUE INDEX ix_admin_users_email ON admin_users (email)")
+                )
         except Exception:
             logger.warning("Unable to create unique index on admin_users.email", exc_info=True)
 
