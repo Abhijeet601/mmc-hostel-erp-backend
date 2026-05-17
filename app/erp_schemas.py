@@ -63,7 +63,21 @@ class ReceiptSummary(BaseModel):
     amount: float
     transaction_id: str
     payment_date: datetime
+    status: str | None = None
+    payment_mode: str | None = None
     receipt_url: str | None = None
+
+
+class PaymentGatewayInfo(BaseModel):
+    provider: str
+    merchant_id: str | None = None
+    merchant_name: str | None = None
+    merchant_role: str | None = None
+    merchant_status: str | None = None
+    public_key: str | None = None
+    callback_url: str | None = None
+    return_url: str | None = None
+    demo_mode: bool = False
 
 
 class ApplicationFormPayload(BaseModel):
@@ -111,6 +125,8 @@ class StudentDashboardResponse(BaseModel):
     photo_url: str | None = None
     application_receipt: ReceiptSummary | None = None
     hostel_receipt: ReceiptSummary | None = None
+    payment_gateway: PaymentGatewayInfo | None = None
+    payment_history: list[ReceiptSummary] = []
     tracker: list[StatusTrackerStep]
     notifications: list[NotificationItem] = []
     summary: dict[str, object | None]
@@ -149,6 +165,7 @@ class ComplaintCreateRequest(BaseModel):
 
 class ComplaintUpdateRequest(BaseModel):
     status: str
+    assigned_staff: str | None = None
     resolution_note: str | None = None
 
 
@@ -159,6 +176,7 @@ class ComplaintResponse(BaseModel):
     category: str
     description: str
     status: str
+    assigned_staff: str | None = None
     resolution_note: str | None = None
     created_at: datetime
     updated_at: datetime

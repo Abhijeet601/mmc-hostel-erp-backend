@@ -18,7 +18,7 @@ class ERPStudent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     application_number: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True)
-    hostel_id: Mapped[str | None] = mapped_column(String(20), unique=True, nullable=True, index=True)
+    hostel_id: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     date_of_birth: Mapped[date] = mapped_column(Date, nullable=False)
     mobile_number: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True)
@@ -165,6 +165,8 @@ class ERPApplication(Base):
     roll_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     preferred_hostel: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    room_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    food_preference: Mapped[str | None] = mapped_column(String(50), nullable=True)
     allocated_hostel: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     allocated_room_id: Mapped[int | None] = mapped_column(
         ForeignKey("hostel_rooms.id"),
@@ -172,6 +174,9 @@ class ERPApplication(Base):
         index=True,
     )
     bed_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    aadhaar_card_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    college_id_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    marksheet_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -273,6 +278,7 @@ class ERPComplaint(Base):
     category: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="open", nullable=False, index=True)
+    assigned_staff: Mapped[str | None] = mapped_column(String(150), nullable=True)
     resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

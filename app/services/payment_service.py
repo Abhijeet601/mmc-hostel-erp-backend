@@ -30,11 +30,21 @@ def approve_application_payment(
             "cycle_reference": application.active_cycle_reference,
             "renewal_reference_number": application.renewal_reference_number,
             "student_name": application.name,
+            "father_name": application.father_name,
+            "mother_name": application.mother_name,
+            "mobile_number": student.mobile_number,
+            "email": student.email,
+            "gender": application.gender,
+            "category": application.category,
             "course_name": application.course_name,
+            "honours_subject": application.honours_subject,
             "session": application.session,
             "transaction_id": payment.transaction_id,
+            "payment_status": payment.status,
+            "payment_mode": payment.payment_mode,
             "payment_date": payment.payment_date.strftime("%d %b %Y %I:%M %p"),
             "amount": f"INR {settings.APP_PAYMENT_AMOUNT}",
+            "student_photo_path": application.student_photo_path,
         }
     )
     email_status = send_receipt_email(
@@ -88,9 +98,15 @@ def approve_hostel_payment(
             "program": application.program,
             "roll_number": application.roll_number,
             "hostel_name": application.allocated_hostel,
+            "hostel_block": application.allocated_room.block_name if application.allocated_room else None,
+            "room_number": application.allocated_room.room_number if application.allocated_room else None,
+            "bed_number": application.bed_number,
             "amount": f"INR {payment.amount}",
             "transaction_id": payment.transaction_id,
+            "payment_status": payment.status,
+            "payment_mode": payment.payment_mode,
             "payment_date": payment.payment_date.strftime("%d %b %Y %I:%M %p"),
+            "student_photo_path": application.student_photo_path,
         }
     )
     email_status = send_receipt_email(

@@ -190,6 +190,21 @@ def migrate_hostel_application_allocation_fields(engine: Engine) -> None:
         if "bed_number" not in columns:
             connection.execute(text("ALTER TABLE hostel_applications ADD COLUMN bed_number VARCHAR(20)"))
             columns.add("bed_number")
+        if "room_type" not in columns:
+            connection.execute(text("ALTER TABLE hostel_applications ADD COLUMN room_type VARCHAR(50)"))
+            columns.add("room_type")
+        if "food_preference" not in columns:
+            connection.execute(text("ALTER TABLE hostel_applications ADD COLUMN food_preference VARCHAR(50)"))
+            columns.add("food_preference")
+        if "aadhaar_card_path" not in columns:
+            connection.execute(text("ALTER TABLE hostel_applications ADD COLUMN aadhaar_card_path VARCHAR(255)"))
+            columns.add("aadhaar_card_path")
+        if "college_id_path" not in columns:
+            connection.execute(text("ALTER TABLE hostel_applications ADD COLUMN college_id_path VARCHAR(255)"))
+            columns.add("college_id_path")
+        if "marksheet_path" not in columns:
+            connection.execute(text("ALTER TABLE hostel_applications ADD COLUMN marksheet_path VARCHAR(255)"))
+            columns.add("marksheet_path")
 
 
 def migrate_hostel_application_allotted_category(engine: Engine) -> None:
@@ -240,6 +255,11 @@ def migrate_hostel_application_cycle_fields(engine: Engine) -> None:
 def migrate_hostel_complaints_table(engine: Engine) -> None:
     inspector = inspect(engine)
     if "hostel_complaints" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("hostel_complaints")}
+        if "assigned_staff" in columns:
+            return
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE hostel_complaints ADD COLUMN assigned_staff VARCHAR(150)"))
         return
 
     with engine.begin() as connection:
@@ -255,6 +275,7 @@ def migrate_hostel_complaints_table(engine: Engine) -> None:
                     category VARCHAR(50) NOT NULL,
                     description TEXT NOT NULL,
                     status VARCHAR(20) NOT NULL DEFAULT 'open',
+                    assigned_staff VARCHAR(150) NULL,
                     resolution_note TEXT NULL,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME NULL,

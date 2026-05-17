@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     VAIDEHI_HOSTEL_FEE: int = 10000
     MAHIMA_HOSTEL_FEE: int = 12000
     DEMO_AUTO_APPROVE: bool = False
+    PAYMENT_PROVIDER: str = "demo"
+    PAYMENT_MERCHANT_ID: str | None = None
+    PAYMENT_MERCHANT_NAME: str | None = None
+    PAYMENT_MERCHANT_ROLE: str | None = None
+    PAYMENT_MERCHANT_STATUS: str | None = None
+    PAYMENT_PUBLIC_KEY: str | None = None
+    PAYMENT_SECRET_KEY: str | None = None
+    PAYMENT_CALLBACK_URL: str | None = None
+    PAYMENT_RETURN_URL: str | None = None
+    PAYMENT_WEBHOOK_SECRET: str | None = None
 
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = "admin123"
@@ -135,6 +145,20 @@ class Settings(BaseSettings):
     @property
     def notice_source_dir(self) -> str:
         return self.NOTICE_SOURCE_DIR
+
+    @property
+    def payment_provider_public_config(self) -> dict[str, str | bool | None]:
+        return {
+            "provider": self.PAYMENT_PROVIDER,
+            "merchant_id": self.PAYMENT_MERCHANT_ID,
+            "merchant_name": self.PAYMENT_MERCHANT_NAME,
+            "merchant_role": self.PAYMENT_MERCHANT_ROLE,
+            "merchant_status": self.PAYMENT_MERCHANT_STATUS,
+            "public_key": self.PAYMENT_PUBLIC_KEY,
+            "callback_url": self.PAYMENT_CALLBACK_URL,
+            "return_url": self.PAYMENT_RETURN_URL,
+            "demo_mode": self.PAYMENT_PROVIDER == "demo",
+        }
 
     @property
     def admin_username(self) -> str:

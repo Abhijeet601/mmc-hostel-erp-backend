@@ -46,6 +46,8 @@ APPLICATION_FIELDS = [
     "program",
     "roll_number",
     "preferred_hostel",
+    "room_type",
+    "food_preference",
 ]
 
 REQUIRED_SUBMISSION_FIELDS = [
@@ -76,6 +78,9 @@ REQUIRED_SUBMISSION_FIELDS = [
     "honours_subject",
     "session",
     "program",
+    "preferred_hostel",
+    "room_type",
+    "food_preference",
 ]
 
 
@@ -303,6 +308,22 @@ def build_asset_url(relative_path: str | None) -> str | None:
     if not relative_path:
         return None
     return f"/{relative_path.lstrip('/')}"
+
+
+def build_document_summary(application: ERPApplication | None) -> dict[str, str | None]:
+    if not application:
+        return {
+            "student_photo_url": None,
+            "aadhaar_card_url": None,
+            "college_id_url": None,
+            "marksheet_url": None,
+        }
+    return {
+        "student_photo_url": build_asset_url(application.student_photo_path),
+        "aadhaar_card_url": build_asset_url(application.aadhaar_card_path),
+        "college_id_url": build_asset_url(application.college_id_path),
+        "marksheet_url": build_asset_url(application.marksheet_path),
+    }
 
 
 def tracker_steps(student: ERPStudent, application: ERPApplication | None) -> list[dict[str, object | None]]:
@@ -637,11 +658,13 @@ def application_summary(student: ERPStudent, application: ERPApplication | None)
         "program": application.program if application else None,
         "roll_number": application.roll_number if application else None,
         "preferred_hostel": application.preferred_hostel if application else None,
+        "room_type": application.room_type if application else None,
+        "food_preference": application.food_preference if application else None,
         "allocated_hostel": application.allocated_hostel if application else None,
         "hostel_block": allocated_room.block_name if allocated_room else None,
         "room_number": allocated_room.room_number if allocated_room else None,
         "bed_number": application.bed_number if application else None,
-        "student_photo_url": build_asset_url(application.student_photo_path) if application else None,
+        **build_document_summary(application),
         "application_payment_transaction_id": app_payment.transaction_id if app_payment else None,
         "hostel_payment_transaction_id": hostel_payment.transaction_id if hostel_payment else None,
     }
@@ -655,8 +678,45 @@ def build_receipt_summary(payment_type: str, amount: float, payment) -> dict[str
         "amount": amount,
         "transaction_id": payment.transaction_id,
         "payment_date": payment.payment_date,
+        "status": payment.status,
+        "payment_mode": payment.payment_mode,
         "receipt_url": build_asset_url(payment.receipt_path),
     }
+
+
+def build_payment_history(application: ERPApplication | None) -> list[dict[str, object | None]]:
+    if not application:
+        return []
+
+    items: list[dict[str, object | None]] = []
+    for payment in application.application_payments:
+        if payment.status == PAYMENT_STATUS_SUCCESS:
+            items.append(
+                {
+                    "payment_type": "application_fee",
+                    "amount": float(payment.amount),
+                    "transaction_id": payment.transaction_id,
+                    "payment_date": payment.payment_date,
+                    "status": payment.status,
+                    "payment_mode": payment.payment_mode,
+                    "receipt_url": build_asset_url(payment.receipt_path),
+                }
+            )
+    for payment in application.hostel_payments:
+        if payment.status == PAYMENT_STATUS_SUCCESS:
+            items.append(
+                {
+                    "payment_type": "hostel_fee",
+                    "amount": float(payment.amount),
+                    "transaction_id": payment.transaction_id,
+                    "payment_date": payment.payment_date,
+                    "status": payment.status,
+                    "payment_mode": payment.payment_mode,
+                    "receipt_url": build_asset_url(payment.receipt_path),
+                }
+            )
+    items.sort(key=lambda item: item["payment_date"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return items
 
 
 def build_student_dashboard(student: ERPStudent) -> dict[str, object | None]:
@@ -710,6 +770,8 @@ def build_student_dashboard(student: ERPStudent) -> dict[str, object | None]:
             float(hostel_success_payment.amount) if hostel_success_payment else 0.0,
             hostel_success_payment,
         ),
+        "payment_gateway": settings.payment_provider_public_config,
+        "payment_history": build_payment_history(application),
         "tracker": tracker_steps(student, application),
         "notifications": student_notifications(student, application),
         "summary": application_summary(student, application),

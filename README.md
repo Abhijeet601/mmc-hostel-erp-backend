@@ -54,5 +54,6 @@ Change these with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
 ## Notes
 
 - Payments are demo/manual right now, but the flow and receipt generation are wired for later gateway integration.
+- Merchant metadata and gateway secrets must be stored in backend `.env` only. Nothing sensitive is exposed to the frontend.
 - Receipt emails are sent only when SMTP is configured; otherwise the API reports a simulated email status.
 - Notices/admin notice management routes remain available under `/api/notices`.

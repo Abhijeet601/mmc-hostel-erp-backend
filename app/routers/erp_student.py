@@ -90,9 +90,14 @@ def _existing_student_by_email_or_mobile(db: Session, email: str, mobile_number:
     )
 
 
-async def _parse_application_form(request: Request) -> tuple[dict[str, object | None], object | None]:
+async def _parse_application_form(request: Request) -> tuple[dict[str, object | None], dict[str, object | None]]:
     form = await request.form()
-    photo = form.get("student_photo") or form.get("student_image") or form.get("photo")
+    files = {
+        "student_photo": form.get("student_photo") or form.get("student_image") or form.get("photo"),
+        "aadhaar_card": form.get("aadhaar_card"),
+        "college_id": form.get("college_id"),
+        "marksheet": form.get("marksheet"),
+    }
 
     aliases = {
         "aadhaar_number": ["aadhaar_number", "aadhar_number"],
@@ -134,7 +139,7 @@ async def _parse_application_form(request: Request) -> tuple[dict[str, object | 
     if data.get("preferred_hostel"):
         data["preferred_hostel"] = ensure_valid_hostel_name(str(data["preferred_hostel"]))
 
-    return data, photo
+    return data, files
 
 
 def _get_or_create_application(student: ERPStudent, db: Session) -> ERPApplication:
@@ -165,7 +170,7 @@ def _apply_application_payload(
     student: ERPStudent,
     application: ERPApplication,
     payload: dict[str, object | None],
-    photo,
+    files: dict[str, object | None],
 ) -> None:
     application.email = student.email
     application.mobile_number = student.mobile_number
@@ -180,12 +185,25 @@ def _apply_application_payload(
     if application.date_of_birth is None:
         application.date_of_birth = student.date_of_birth
 
+    photo = files.get("student_photo")
     if photo and getattr(photo, "filename", None):
         application.student_photo_path = save_upload_file(
             photo,
             settings.photo_dir,
             prefix=f"student_{student.id}",
         )
+
+    for field_name, file_obj, prefix in (
+        ("aadhaar_card_path", files.get("aadhaar_card"), "aadhaar"),
+        ("college_id_path", files.get("college_id"), "college_id"),
+        ("marksheet_path", files.get("marksheet"), "marksheet"),
+    ):
+        if file_obj and getattr(file_obj, "filename", None):
+            setattr(
+                application,
+                field_name,
+                save_upload_file(file_obj, settings.photo_dir, prefix=f"{prefix}_{student.id}"),
+            )
 
 
 def _validate_submission(application: ERPApplication) -> list[str]:
@@ -195,8 +213,9 @@ def _validate_submission(application: ERPApplication) -> list[str]:
         if value is None or str(value).strip() == "":
             missing_fields.append(field_name)
 
-    if not application.student_photo_path:
-        missing_fields.append("student_photo")
+    for field_name in ("student_photo_path", "aadhaar_card_path", "college_id_path", "marksheet_path"):
+        if not getattr(application, field_name):
+            missing_fields.append(field_name.replace("_path", ""))
 
     return missing_fields
 
@@ -343,8 +362,8 @@ async def save_application_draft(
     if application.is_verified:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Verified applications cannot be edited.")
 
-    payload, photo = await _parse_application_form(request)
-    _apply_application_payload(student=student, application=application, payload=payload, photo=photo)
+    payload, files = await _parse_application_form(request)
+    _apply_application_payload(student=student, application=application, payload=payload, files=files)
     if application.form_status != "submitted":
         application.form_status = "draft"
     db.add(application)
@@ -362,8 +381,8 @@ async def submit_application(
     if application.is_verified:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Verified applications cannot be edited.")
 
-    payload, photo = await _parse_application_form(request)
-    _apply_application_payload(student=student, application=application, payload=payload, photo=photo)
+    payload, files = await _parse_application_form(request)
+    _apply_application_payload(student=student, application=application, payload=payload, files=files)
 
     missing_fields = _validate_submission(application)
     if missing_fields:

@@ -422,6 +422,7 @@ def update_complaint(
     if not complaint:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Complaint not found.")
     complaint.status = clean_text(payload.status) or complaint.status
+    complaint.assigned_staff = clean_text(payload.assigned_staff)
     complaint.resolution_note = clean_text(payload.resolution_note)
     db.add(complaint)
     db.commit()
